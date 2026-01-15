@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-keys
+  namespace: review-analytics
+type: Opaque
+stringData:
+  VK_ACCESS_TOKEN: "your-vk-token"
+  OK_ACCESS_TOKEN: "your-ok-token"
+  OK_APPLICATION_KEY: "your-ok-app-key"
+  OK_SESSION_SECRET_KEY: "your-ok-secret"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector-service
+  namespace: review-analytics
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: collector-service
+  template:
+    metadata:
+      labels:
+        app: collector-service
+    spec:
+      containers:
+      - name: collector
+        image: your-registry/collector-service:latest
+        ports:
+        - containerPort: 5001
+        env:
+        - name: POSTGRES_HOST
+          value: postgres
+        - name: MONGO_HOST
+          value: mongodb
+        - name: REDIS_HOST
+          value: redis
+        - name: VK_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: VK_ACCESS_TOKEN
+        - name: OK_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: OK_ACCESS_TOKEN
+        - name: OK_APPLICATION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: OK_APPLICATION_KEY
+        - name: OK_SESSION_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: OK_SESSION_SECRET_KEY
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collector-service
+  namespace: review-analytics
+spec:
+  selector:
+    app: collector-service
+  ports:
+  - port: 5001
+    targetPort: 5001
+  type: ClusterIP
