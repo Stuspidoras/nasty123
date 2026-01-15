@@ -1,11 +1,13 @@
 import axios, { AxiosInstance } from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL;
-const API_URL = import.meta.env.VITE_API_URL;
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5002/api';
+const AUTH_BASE_URL = import.meta.env.VITE_AUTH_URL || 'http://localhost:5000/api/auth';
+const COLLECTOR_BASE_URL = import.meta.env.VITE_COLLECTOR_URL || 'http://localhost:5001/api/collect';
 
 class ApiService {
   private api: AxiosInstance;
   private authApi: AxiosInstance;
+  private collectorApi: AxiosInstance;
 
   constructor() {
     this.api = axios.create({
@@ -16,29 +18,35 @@ class ApiService {
       baseURL: AUTH_BASE_URL,
     });
 
+    this.collectorApi = axios.create({
+      baseURL: COLLECTOR_BASE_URL,
+    });
+
     // Interceptor для добавления токена
-    this.api.interceptors.request.use(
-      (config) => {
-        const token = localStorage.getItem('token');
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-        }
-        return config;
-      },
-      (error) => Promise.reject(error)
-    );
+    const addTokenInterceptor = (config: any) => {
+      const token = localStorage.getItem('token');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    };
+
+    this.api.interceptors.request.use(addTokenInterceptor, (error) => Promise.reject(error));
+    this.authApi.interceptors.request.use(addTokenInterceptor, (error) => Promise.reject(error));
+    this.collectorApi.interceptors.request.use(addTokenInterceptor, (error) => Promise.reject(error));
 
     // Interceptor для обработки ошибок
-    this.api.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        if (error.response?.status === 401) {
-          localStorage.removeItem('token');
-          window.location.href = '/login';
-        }
-        return Promise.reject(error);
+    const errorInterceptor = (error: any) => {
+      if (error.response?.status === 401) {
+        localStorage.removeItem('token');
+        window.location.href = '/login';
       }
-    );
+      return Promise.reject(error);
+    };
+
+    this.api.interceptors.response.use((response) => response, errorInterceptor);
+    this.authApi.interceptors.response.use((response) => response, errorInterceptor);
+    this.collectorApi.interceptors.response.use((response) => response, errorInterceptor);
   }
 
   // Auth methods
@@ -62,7 +70,6 @@ class ApiService {
     const params = new URLSearchParams();
     if (query) params.append('query', query);
     if (source) params.append('source', source);
-
     const response = await this.api.get(`/statistics/sentiment?${params}`);
     return response.data;
   }
@@ -78,7 +85,6 @@ class ApiService {
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== undefined) params.append(key, String(value));
     });
-
     const response = await this.api.get(`/posts/processed?${params}`);
     return response.data;
   }
@@ -94,7 +100,6 @@ class ApiService {
     if (query) params.append('query', query);
     if (sentiment) params.append('sentiment', sentiment);
     if (limit) params.append('limit', String(limit));
-
     const response = await this.api.get(`/analytics/keywords?${params}`);
     return response.data;
   }
@@ -103,7 +108,6 @@ class ApiService {
     const params = new URLSearchParams();
     if (query) params.append('query', query);
     if (limit) params.append('limit', String(limit));
-
     const response = await this.api.get(`/analytics/entities?${params}`);
     return response.data;
   }
@@ -112,7 +116,6 @@ class ApiService {
     const params = new URLSearchParams();
     if (query) params.append('query', query);
     if (sentiment) params.append('sentiment', sentiment);
-
     const response = await this.api.get(`/export/csv?${params}`, {
       responseType: 'blob',
     });
@@ -121,27 +124,12 @@ class ApiService {
 
   // Collection methods
   async startCollection(keywords: string[], sources: string[]) {
-    const response = await axios.post(
-      'http://localhost:5001/api/collect/start',
-      { keywords, sources },
-      {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-      }
-    );
+    const response = await this.collectorApi.post('/start', { keywords, sources });
     return response.data;
   }
 
   async getCollectionStatus(taskId: string) {
-    const response = await axios.get(
-      `http://localhost:5001/api/collect/status/${taskId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-      }
-    );
+    const response = await this.collectorApi.get(`/status/${taskId}`);
     return response.data;
   }
 }

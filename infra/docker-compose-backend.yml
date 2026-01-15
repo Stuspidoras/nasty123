@@ -100,12 +100,50 @@ services:
       - MONGO_DB=reviews
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - POSTGRES_DB=reviewsdb
     ports:
       - "5001:5001"
     depends_on:
       mongodb:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: ../collector
+      dockerfile: Dockerfile
+    container_name: celery-worker
+    command: celery -A celery_worker.celery_app worker --loglevel=info
+    environment:
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USER=mongo
+      - MONGO_PASSWORD=mongo123
+      - MONGO_DB=reviews
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - POSTGRES_DB=reviewsdb
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     networks:
       - app-network

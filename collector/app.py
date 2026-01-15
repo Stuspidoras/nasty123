@@ -11,15 +11,31 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Инициализация Flask приложения
 app = Flask(__name__)
 CORS(app)
 
-# Celery для асинхронной обработки
-celery = Celery('collector', broker=f'redis://{Config.REDIS_HOST}:{Config.REDIS_PORT}/0')
+# Переменные для хранения подключений (будут инициализированы позже)
+celery = None
+mongo_client = None
+mongo_db = None
 
-# MongoDB подключение
-mongo_client = MongoClient(Config.get_mongo_url())
-mongo_db = mongo_client[Config.MONGO_DB]
+
+def init_services():
+    """
+    Инициализация сервисов после создания приложения
+    """
+    global celery, mongo_client, mongo_db
+
+    # Celery для асинхронной обработки
+    celery = Celery('collector', broker=f'redis://{Config.REDIS_HOST}:{Config.REDIS_PORT}/0')
+
+    # MongoDB подключение
+    mongo_client = MongoClient(Config.get_mongo_url())
+    mongo_db = mongo_client[Config.MONGO_DB]
+
+    logger.info("Сервисы успешно инициализированы")
+
 
 def get_postgres_connection():
     return psycopg2.connect(
@@ -30,10 +46,20 @@ def get_postgres_connection():
         password=Config.POSTGRES_PASSWORD
     )
 
-@celery.task
-def collect_reviews_task(sources, keywords, count=100):
+
+@app.before_request
+def before_first_request():
     """
-    Асинхронная задача сбора отзывов
+    Инициализация сервисов при первом запросе
+    """
+    global celery, mongo_client, mongo_db
+    if mongo_db is None:
+        init_services()
+
+
+def collect_reviews_task_sync(sources, keywords, count=100):
+    """
+    Задача сбора отзывов (синхронная версия для инициализации)
     """
     vk_collector = VKCollector()
     ok_collector = OKCollector()
@@ -59,7 +85,7 @@ def collect_reviews_task(sources, keywords, count=100):
             all_posts.extend(ok_posts)
 
     # Сохранение в MongoDB (для сырых данных)
-    if all_posts:
+    if all_posts and mongo_db is not None:
         mongo_db.raw_posts.insert_many(all_posts)
         logger.info(f"Сохранено {len(all_posts)} постов в MongoDB")
 
@@ -87,9 +113,7 @@ def collect_reviews_task(sources, keywords, count=100):
         conn.commit()
         cur.close()
         conn.close()
-
         logger.info(f"Метаданные сохранены в PostgreSQL")
-
     except Exception as e:
         logger.error(f"Ошибка при сохранении в PostgreSQL: {e}")
 
@@ -98,9 +122,11 @@ def collect_reviews_task(sources, keywords, count=100):
         'collected': len(all_posts)
     }
 
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy'}), 200
+
 
 @app.route('/api/collect', methods=['POST'])
 def collect_reviews():
@@ -116,32 +142,51 @@ def collect_reviews():
     if not keywords:
         return jsonify({'error': 'Необходимо указать ключевые слова'}), 400
 
-    # Запуск асинхронной задачи
-    task = collect_reviews_task.delay(sources, keywords, count)
+    # Запуск задачи
+    try:
+        if celery is not None:
+            # Если Celery доступен, запускаем асинхронно
+            task = celery.send_task('collect_reviews_task', args=[sources, keywords, count])
+            return jsonify({
+                'message': 'Сбор данных запущен асинхронно',
+                'task_id': str(task.id)
+            }), 202
+        else:
+            # Иначе запускаем синхронно
+            result = collect_reviews_task_sync(sources, keywords, count)
+            return jsonify({
+                'message': 'Сбор данных завершен',
+                'result': result
+            }), 200
+    except Exception as e:
+        logger.error(f"Ошибка при запуске сбора: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    return jsonify({
-        'message': 'Сбор данных запущен',
-        'task_id': task.id
-    }), 202
 
 @app.route('/api/collect/status/<task_id>', methods=['GET'])
 def get_task_status(task_id):
     """
     Проверка статуса задачи сбора
     """
-    task = collect_reviews_task.AsyncResult(task_id)
+    if celery is None:
+        return jsonify({'error': 'Celery не инициализирован'}), 500
 
+    task = celery.AsyncResult(task_id)
     return jsonify({
         'task_id': task_id,
         'state': task.state,
         'result': task.result if task.ready() else None
     }), 200
 
+
 @app.route('/api/posts', methods=['GET'])
 def get_posts():
     """
     Получение собранных постов
     """
+    if mongo_db is None:
+        return jsonify({'error': 'MongoDB не инициализирована'}), 500
+
     query = request.args.get('query', '')
     source = request.args.get('source', '')
     limit = int(request.args.get('limit', 50))
@@ -163,5 +208,8 @@ def get_posts():
         'count': len(posts)
     }), 200
 
+
 if __name__ == '__main__':
+    # Инициализация сервисов перед запуском
+    init_services()
     app.run(host='0.0.0.0', port=5001, debug=True)
